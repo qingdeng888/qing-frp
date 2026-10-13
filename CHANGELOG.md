@@ -46,3 +46,12 @@
 
 Node.js 22 + TypeScript（ESM）+ Fastify 5 + `node:sqlite`（零原生依赖）。
 前端为无构建步骤的原生 JavaScript。
+
+### CI / 发布
+
+`.github/workflows/docker-publish.yml`：推送到 `main`、打 `v*` 标签或手动触发时，
+自动构建 `linux/amd64` + `linux/arm64` 多架构镜像并发布到 GitHub Container Registry。
+
+- 镜像：`ghcr.io/qingdeng888/qing-frp`
+- 标签：`latest` / 分支名 / 语义化版本 / `sha-<短哈希>`
+- 构建步骤内置重试（应对拉取依赖时的网络抖动）；遇权限类错误立即中止并给出排查指引

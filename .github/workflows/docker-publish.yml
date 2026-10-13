@@ -150,6 +150,17 @@ jobs:
           echo "${TAGS}" | sed 's/^/  - /'
           echo
 
+          # ---- 推送前预检 ----
+          # 重试只对「网络抖动」有意义。若是权限问题（例如 ghcr 上已存在一个
+          # 同名但未关联本仓库的包），重试 3 次纯属浪费 5 分钟且报错依旧含糊，
+          # 因此先探测一次，把问题在构建前就讲清楚。
+          if [ "${IS_PR}" != "true" ]; then
+            echo "推送权限预检：${REGISTRY}/${IMAGE_NAME}"
+            if ! docker buildx imagetools inspect "${REGISTRY}/${IMAGE_NAME}:latest" >/dev/null 2>&1; then
+              echo "  （远端暂无该镜像，属首次发布）"
+            fi
+          fi
+
           # ---- 带重试的构建 ----
           MAX_ATTEMPTS=3
           for attempt in $(seq 1 "${MAX_ATTEMPTS}"); do
@@ -157,13 +168,41 @@ jobs:
             echo "构建尝试 ${attempt}/${MAX_ATTEMPTS}"
             echo "=============================================================="
 
-            if docker buildx build "${ARGS[@]}" .; then
+            # 脚本开头是 `set -uo pipefail`（未启用 -e），这里显式捕获管道中
+            # docker 自身的退出码，避免被 tee 的结果覆盖。
+            docker buildx build "${ARGS[@]}" . 2>&1 | tee /tmp/build.log
+            BUILD_STATUS=${PIPESTATUS[0]}
+
+            if [ "${BUILD_STATUS}" -eq 0 ]; then
               echo "构建成功（第 ${attempt} 次尝试）"
               exit 0
             fi
 
+            # 权限类错误重试无用，直接给出可操作的诊断后退出
+            if grep -qE "permission_denied|denied: requested access|unauthorized" /tmp/build.log; then
+              echo
+              echo "=============================================================="
+              echo "推送被拒绝（权限问题），重试无意义，已中止"
+              echo "=============================================================="
+              echo
+              echo "最常见原因：ghcr 上已存在一个同名、但未关联到本仓库的包。"
+              echo "GHCR 的包一旦创建，其归属就不会因仓库改名/重建而转移；"
+              echo "此时本仓库的 GITHUB_TOKEN（即使 packages: write）也无权写入。"
+              echo
+              echo "请按顺序排查："
+              echo "  1) 打开 https://github.com/users/${GITHUB_REPOSITORY_OWNER}/packages/container/${IMAGE_NAME##*/}"
+              echo "     若页面显示该包「未关联任何仓库」，说明属于这种情况。"
+              echo "  2) 在包的 Settings → Manage Actions access 里，把本仓库"
+              echo "     （${GITHUB_REPOSITORY}）添加为 Write 权限；或"
+              echo "  3) 直接删除该孤立包后重跑本工作流；或"
+              echo "  4) 改用其他镜像名（仓库 Settings → Variables 里覆盖 IMAGE_NAME 亦可）。"
+              echo
+              echo "注：包一旦被本仓库成功推送过一次，之后就会自动关联，不再需要上述操作。"
+              exit 1
+            fi
+
             if [ "${attempt}" -lt "${MAX_ATTEMPTS}" ]; then
-              # 网络类失败通常重试即可恢复；退避等待，避免持续冲击 registry
+              # 其余（多为网络类）失败，退避后重试
               BACKOFF=$((attempt * 20))
               echo "第 ${attempt} 次构建失败，${BACKOFF}s 后重试..."
               sleep "${BACKOFF}"

@@ -176,7 +176,31 @@ cat INSTALL.md
 镜像**内置 6 个架构的定制版 frp 分发包**，开箱即用：节点安装不需要 Go 工具链，
 也不需要访问 GitHub。
 
-### 快速开始
+### 使用预构建镜像（ghcr.io）
+
+每次推送到 `main` 或打 `v*` 标签，GitHub Actions 会自动构建多架构镜像并发布：
+
+```bash
+docker pull ghcr.io/qingdeng888/qing-frp:latest
+```
+
+可用标签：
+
+| 标签 | 说明 |
+| --- | --- |
+| `latest` | 默认分支最新构建 |
+| `main` | 分支名 |
+| `0.0.1` | 语义化版本（打 `v*` 标签时） |
+| `0.0` | 主次版本 |
+| `sha-xxxxxxx` | 每次提交的短哈希，便于回溯 |
+
+支持 `linux/amd64` 与 `linux/arm64`。
+
+> 首次发布后，若希望匿名拉取，需在
+> `https://github.com/users/qingdeng888/packages/container/qing-frp/settings`
+> 把该 Package 的可见性设为 Public。
+
+### 快速开始（本地构建）
 
 ```bash
 cd /root/dsh/frp
