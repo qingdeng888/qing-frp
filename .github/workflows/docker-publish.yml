@@ -111,6 +111,10 @@ jobs:
           IS_PR: ${{ github.event_name == 'pull_request' }}
           NO_CACHE: ${{ github.event.inputs.no_cache }}
         run: |
+          # 注意：GitHub Actions 用 `bash -e` 执行 run 脚本，因此即便这里只写
+          # `set -uo pipefail`，-e 依然是开着的。必须显式关掉，否则第一次
+          # 构建失败就会立刻退出，重试与诊断分支都跑不到。
+          set +e
           set -uo pipefail
 
           # ---- 组装 buildx 参数 ----
