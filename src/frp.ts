@@ -41,7 +41,15 @@ export function assetName(version: string, arch: string = process.arch, goos = p
 }
 
 export function normalizeVersion(version: string): string {
-  return String(version).trim().replace(/^v/, '');
+  const v = String(version).trim().replace(/^v/, '');
+  // 空值是合法输入：调用方（buildInstallPlan）用空表示「未指定，走默认版本」。
+  if (!v) return '';
+  // 该值会被拼进下载 URL 与压缩包文件名（frp_<version>_linux_<arch>.tar.gz）。
+  // 语义化版本 + 可选的 -console 后缀之外的一切都拒绝，防止路径穿越 / URL 注入。
+  if (!/^\d+\.\d+\.\d+(-[A-Za-z0-9]+)?$/.test(v)) {
+    throw new Error(`frp 版本号格式不合法: ${JSON.stringify(String(version))}（应为 x.y.z 或 x.y.z-后缀）`);
+  }
+  return v;
 }
 
 export function downloadUrl(version: string, arch: string = process.arch, goos = process.platform): string {

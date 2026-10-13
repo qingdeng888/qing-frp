@@ -50,6 +50,55 @@ export function sweepExpiredSessions(now = Date.now()): number {
   return res.changes;
 }
 
+/**
+ * 登录尝试速率限制（内存态，按 IP + 用户名双维度）。
+ *
+ * 目的：拖慢对口令的暴力破解。窗口期内超过上限后锁定一段时间。
+ * 内存实现即可满足单机面板的规模；重启即重置，不影响可用性。
+ */
+const LOGIN_WINDOW_MS = 10 * 60 * 1000; // 10 分钟滑动窗口
+const LOGIN_MAX_ATTEMPTS = 10; // 窗口内最多 10 次失败
+const LOGIN_LOCKOUT_MS = 15 * 60 * 1000; // 触发后锁定 15 分钟
+
+interface LoginAttempt { times: number[]; lockedUntil: number }
+const loginAttempts = new Map<string, LoginAttempt>();
+
+function loginKey(ip: string, username: string): string {
+  return `${ip}|${username}`;
+}
+
+export function isLoginLocked(ip: string, username: string, now = Date.now()): number {
+  const rec = loginAttempts.get(loginKey(ip, username));
+  if (!rec) return 0;
+  if (rec.lockedUntil > now) return Math.ceil((rec.lockedUntil - now) / 1000);
+  return 0;
+}
+
+export function recordLoginFailure(ip: string, username: string, now = Date.now()): void {
+  const key = loginKey(ip, username);
+  const rec = loginAttempts.get(key) ?? { times: [], lockedUntil: 0 };
+  rec.times = rec.times.filter((t) => now - t < LOGIN_WINDOW_MS);
+  rec.times.push(now);
+  if (rec.times.length >= LOGIN_MAX_ATTEMPTS) {
+    rec.lockedUntil = now + LOGIN_LOCKOUT_MS;
+    rec.times = [];
+  }
+  loginAttempts.set(key, rec);
+
+  // 顺手清理过期条目，避免 map 无限增长
+  if (loginAttempts.size > 10_000) {
+    for (const [k, r] of loginAttempts) {
+      if (r.lockedUntil <= now && (r.times.length === 0 || now - r.times[r.times.length - 1]! > LOGIN_WINDOW_MS)) {
+        loginAttempts.delete(k);
+      }
+    }
+  }
+}
+
+export function clearLoginFailures(ip: string, username: string): void {
+  loginAttempts.delete(loginKey(ip, username));
+}
+
 export function createSession(
   username: string,
   meta: { userAgent?: string; remoteIp?: string } = {},

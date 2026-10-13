@@ -30,7 +30,11 @@ export class TomlWriter {
   private lines: string[] = [];
 
   comment(text: string): this {
-    this.lines.push(`# ${text}`);
+    // 注释里的换行会让后续内容逃出注释上下文——攻击者可用节点名等自由文本
+    // 注入完整的 [[proxies]] 段（构造 backdoor 代理）。这里把所有换行替换为
+    // 空格，保证一次 comment 调用永远只产出一行注释。
+    const safe = String(text).replace(/\r\n?|\n/g, ' ');
+    this.lines.push(`# ${safe}`);
     return this;
   }
 

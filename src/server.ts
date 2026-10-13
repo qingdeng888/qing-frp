@@ -83,6 +83,9 @@ import {
   destroySession,
   isAuthenticated,
   setSessionCookie,
+  clearLoginFailures,
+  isLoginLocked,
+  recordLoginFailure,
   verifyCredentials,
 } from './auth.js';
 import { PANEL_PASSWORD, PANEL_USER, SESSION_COOKIE } from './config.js';
@@ -120,6 +123,22 @@ function panelUrlFor(req?: { headers?: Record<string, unknown> }): PanelUrlSourc
 function fail(reply: FastifyReply, err: unknown, code = 400) {
   const message = err instanceof Error ? err.message : String(err);
   reply.code(code).send({ error: message });
+}
+
+/**
+ * Windows frpc.exe 的内容缓存。
+ *
+ * exe 约 17MB，每次打包请求都从磁盘读取会让并发下载成倍占用内存。
+ * 以 { mtimeMs, size } 为 key 缓存内容：文件被重新构建后自动失效。
+ */
+let windowsExeCache: { key: string; buf: Buffer } | null = null;
+async function readWindowsExeCached(exePath: string): Promise<Buffer> {
+  const st = await fsp.stat(exePath);
+  const key = `${exePath}:${st.mtimeMs}:${st.size}`;
+  if (windowsExeCache && windowsExeCache.key === key) return windowsExeCache.buf;
+  const buf = await fsp.readFile(exePath);
+  windowsExeCache = { key, buf };
+  return buf;
 }
 
 /** Locate a built Windows frpc.exe (prebuilt zip or unpacked directory). */
@@ -177,10 +196,22 @@ export function buildServer(): FastifyInstance {
     const body = (req.body ?? {}) as { username?: string; password?: string };
     const username = String(body.username ?? '');
     const password = String(body.password ?? '');
+
+    // 暴力破解防护：滑动窗口内失败超限则锁定（按 IP+用户名）
+    const lockedSeconds = isLoginLocked(req.ip, username);
+    if (lockedSeconds > 0) {
+      return reply
+        .code(429)
+        .header('Retry-After', String(lockedSeconds))
+        .send({ error: `尝试次数过多，请 ${lockedSeconds} 秒后再试` });
+    }
+
     if (!verifyCredentials(username, password)) {
       // Deliberately vague: do not reveal which half was wrong.
+      recordLoginFailure(req.ip, username);
       return reply.code(401).send({ error: '账号或密码错误' });
     }
+    clearLoginFailures(req.ip, username);
     const session = createSession(username, {
       userAgent: String(req.headers['user-agent'] ?? ''),
       remoteIp: req.ip,
@@ -603,7 +634,7 @@ export function buildServer(): FastifyInstance {
     }
 
     try {
-      const exe = await fsp.readFile(exePath);
+      const exe = await readWindowsExeCached(exePath);
       const pkg = buildWindowsPackage(plan, exe, {
         panelUrl: panelUrlFor(req).url,
       });
@@ -628,7 +659,7 @@ export function buildServer(): FastifyInstance {
     if (!exePath) {
       return fail(reply, '未找到 Windows 版定制 frpc.exe', 503);
     }
-    const exe = await fsp.readFile(exePath);
+    const exe = await readWindowsExeCached(exePath);
     const pkg = buildWindowsPackage(plan, exe, { panelUrl: panelUrlFor(req).url });
     reply
       .header('Content-Type', 'application/zip')

@@ -74,6 +74,8 @@ function normalizeAssetMirrors(input: unknown): Record<string, string> {
 function normalizeFrpsAddr(input: unknown): string {
   let v = String(input ?? '').trim();
   if (!v) return '';
+  // 域名最长 253 字符（DNS 规范上限）
+  if (v.length > 253) throw new Error('frps 地址过长（域名最长 253 字符）');
   // 剥掉 http(s):// 前缀
   v = v.replace(/^[a-z][a-z0-9+.-]*:\/\//i, '');
   // 剥掉路径 / 查询 / 片段
@@ -427,6 +429,34 @@ export interface NodeInput {
   extraToml?: string;
 }
 
+/**
+ * 校验节点的安装目录。
+ *
+ * 该值会被拼进 systemd unit 的 ExecStart 与安装脚本的路径里：若包含换行，
+ * 攻击者可注入 ExecStartPre= 等额外指令（任意命令执行）。这里只允许
+ * 绝对路径形式的安全字符。
+ */
+/** 通用字符串长度上限（防止超长输入撑爆 SQLite/日志/TOML）。 */
+function limitLen(input: unknown, max: number, label: string): string {
+  const v = String(input ?? '');
+  if (v.length > max) throw new Error(`${label} 长度不能超过 ${max} 字符`);
+  return v;
+}
+
+export function normalizeInstallDir(input: unknown): string {
+  let v = String(input ?? '').trim() || '/etc/frp';
+  if (!v.startsWith('/')) throw new Error('安装目录必须是绝对路径（以 / 开头）');
+  // 先归一化尾部斜杠再做字符校验（/a/b/ 也是合法输入）
+  v = v.replace(/\/+$/, '');
+  if (/[\r\n\0]/.test(v)) throw new Error('安装目录不能包含换行或空字节');
+  // 形如 /a/b/c；'..' 已在下面单独拦截
+  if (!/^(\/[A-Za-z0-9_.@%+~-]+)+$/.test(v)) {
+    throw new Error('安装目录包含不安全字符');
+  }
+  if (v.includes('..')) throw new Error('安装目录不能包含 ..');
+  return v.replace(/\/+$/, '');
+}
+
 function uniqueInstallToken(): string {
   for (let i = 0; i < 20; i++) {
     const token = shortId(16);
@@ -436,8 +466,9 @@ function uniqueInstallToken(): string {
 }
 
 export function createNode(input: NodeInput): Node {
-  const name = String(input.name ?? '').trim();
+  const name = limitLen(input.name, 100, '节点名称').trim();
   if (!name) throw new Error('节点名称不能为空');
+  const remark = limitLen(input.remark, 500, '备注');
   const settings = getSettings();
   const token = uniqueInstallToken();
   const res = run(
@@ -446,9 +477,9 @@ export function createNode(input: NodeInput): Node {
        log_level, login_fail_exit, tls_enable, protocol, user, extra_toml, install_token)
      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     name,
-    String(input.remark ?? ''),
+    remark,
     String(input.serverAddr ?? ''),
-    String(input.installDir || '/etc/frp'),
+    normalizeInstallDir(input.installDir),
     String(input.frpcVersion ?? ''),
     String(input.downloadBase ?? ''),
     input.serverPort ?? settings.bindPort,
@@ -472,9 +503,9 @@ export function updateNode(id: number, input: NodeInput): Node {
   if (!existing) throw new Error('节点不存在');
   const merged = {
     name: input.name !== undefined ? String(input.name).trim() : existing.name,
-    remark: input.remark !== undefined ? String(input.remark) : existing.remark,
+    remark: input.remark !== undefined ? limitLen(input.remark, 500, '备注') : existing.remark,
     serverAddr: input.serverAddr !== undefined ? String(input.serverAddr).trim() : existing.serverAddr,
-    installDir: input.installDir !== undefined ? String(input.installDir).trim() || '/etc/frp' : existing.installDir,
+    installDir: input.installDir !== undefined ? normalizeInstallDir(input.installDir) : existing.installDir,
     frpcVersion: input.frpcVersion !== undefined ? String(input.frpcVersion).trim() : existing.frpcVersion,
     downloadBase: input.downloadBase !== undefined ? String(input.downloadBase).trim() : existing.downloadBase,
     serverPort: input.serverPort !== undefined ? input.serverPort : existing.serverPort,

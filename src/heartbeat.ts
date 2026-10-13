@@ -161,6 +161,18 @@ export function getNodeLiveStatus(nodeId: number): NodeLiveStatus {
   return { nodeId, online: isOnline(hb), heartbeat: hb, ageSeconds };
 }
 
+/**
+ * 清理超过 7 天未更新的心跳记录。
+ *
+ * node_heartbeats 每个 node 只有一行（UPSERT），正常情况下不会增长；
+ * 但删除节点时若 deleteNode 未被调用（例如手动删库），或历史数据残留，
+ * 这里兜底清理。每次 sweep 时顺带执行。
+ */
+export function sweepStaleHeartbeats(now = Date.now()): number {
+  const cutoff = now - 7 * 24 * 3600 * 1000;
+  return run('DELETE FROM node_heartbeats WHERE received_at <= ?', cutoff).changes;
+}
+
 export function deleteHeartbeat(nodeId: number): void {
   run('DELETE FROM node_heartbeats WHERE node_id = ?', nodeId);
 }

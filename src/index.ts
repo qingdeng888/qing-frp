@@ -6,6 +6,7 @@ import { customVersionString, checkCustomAvailability } from './variant.js';
 import { CUSTOM_DIR } from './custom-build.js';
 import { getSettings, reconcileReservations } from './store.js';
 import { sweepExpiredSessions } from './auth.js';
+import { sweepStaleHeartbeats } from './heartbeat.js';
 import { shortId } from './util.js';
 import fs from 'node:fs';
 import path from 'node:path';

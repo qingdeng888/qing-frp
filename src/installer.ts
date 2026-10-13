@@ -1,3 +1,7 @@
+import { createHash } from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
+import { CUSTOM_DIR } from './custom-build.js';
 import { FRPC_CONFIG_PATH } from './config.js';
 import { DEFAULT_FRP_VERSION, normalizeVersion } from './frp.js';
 import { renderFrpcToml, type ResolvedPort } from './render.js';
@@ -44,6 +48,11 @@ export interface InstallPlan {
    * 直链失败会自动回退到 customBase / downloadBase。
    */
   assetMirrors: Record<string, string>;
+  /**
+   * 面板本地分发包的 sha256（键与 assetMirrors 相同：资产文件名）。
+   * 仅当面板自己托管该文件时才有值；纯外部直链无 hash 可言。
+   */
+  assetChecksums: Record<string, string>;
 }
 
 export const SERVICE_PREFIX = 'frpc';
@@ -96,6 +105,22 @@ export function buildInstallPlan(nodeId: number): InstallPlan {
     ? explicitVersion
     : customVersionString(DEFAULT_FRP_VERSION);
 
+  function buildAssetChecksums(mirrors: Record<string, string>): Record<string, string> {
+    // 只对面板本地实际存在的分发包计算 sha256。配置了外部直链的资产
+    // 仍以面板本地包为准（回退源），故 hash 始终可校验。
+    const out: Record<string, string> = {};
+    const distDir = path.join(CUSTOM_DIR, 'dist');
+    for (const name of Object.keys(mirrors)) {
+      if (!/^frp_[0-9.]+_linux_[A-Za-z0-9_]+\.tar\.gz$/.test(name)) continue;
+      const file = path.join(distDir, name);
+      try {
+        const buf = fs.readFileSync(file);
+        out[name] = createHash('sha256').update(buf).digest('hex');
+      } catch { /* 本地无该包，跳过 */ }
+    }
+    return out;
+  }
+
   return {
     node,
     proxies,
@@ -112,6 +137,7 @@ export function buildInstallPlan(nodeId: number): InstallPlan {
     variant: 'custom',
     customBase: node.downloadBase ? '' : customDistBase,
     assetMirrors: settings.assetMirrors ?? {},
+    assetChecksums: buildAssetChecksums(settings.assetMirrors ?? {}),
   };
 }
 
@@ -142,6 +168,10 @@ export interface InstallScriptOptions {
 export function renderInstallScript(plan: InstallPlan, opts: InstallScriptOptions): string {
   const { node } = plan;
   const tomlB64 = wrapBase64(b64(plan.frpcToml));
+  // 面板侧分发包的 sha256（若本地存在）。用于安装脚本校验下载完整性，
+  // 防止 mirror/CDN 被劫持后替换 frpc 二进制。直链场景无法预知 hash，
+  // 脚本会在面板分发源可用时才校验。
+  const checksumB64 = wrapBase64(b64(JSON.stringify(plan.assetChecksums ?? {})));
   // 直链映射以 JSON+base64 嵌入：URL 含 ?sign=...:0 等特殊字符，
   // 直接拼进 shell 变量会被解释。
   const mirrorsB64 = wrapBase64(b64(JSON.stringify(plan.assetMirrors ?? {})));
@@ -297,6 +327,14 @@ ASSET_MIRRORS_B64_EOF
 )"
 fi
 
+# 面板本地分发包的 sha256（JSON 的 base64）。下载完成后校验，防止
+# mirror/CDN 被劫持后替换 frpc 二进制。直链源无法预知 hash，
+# 因此直链命中时跳过校验（面板回退源始终可校验）。
+ASSET_CHECKSUMS_B64="$(cat <<'ASSET_CHECKSUMS_B64_EOF'
+${checksumB64}
+ASSET_CHECKSUMS_B64_EOF
+)"
+
 NEED_DOWNLOAD=1
 if [[ -x "\$INSTALL_DIR/frpc" ]]; then
   # Compare the full version string (including the "-console" suffix) so a
@@ -331,28 +369,53 @@ if [[ "\$NEED_DOWNLOAD" == "1" ]]; then
       fi
     fi
   fi
-  if [[ -n "\$ASSET_MIRROR" ]]; then CANDIDATES+=("\$ASSET_MIRROR"); fi
-  if [[ -n "\$DOWNLOAD_BASE" ]]; then CANDIDATES+=("\${DOWNLOAD_BASE%/}/\$ASSET"); fi
-  if [[ -n "\$CUSTOM_BASE" ]]; then CANDIDATES+=("\${CUSTOM_BASE%/}/\$ASSET"); fi
+    if [[ -n "\$ASSET_MIRROR" ]]; then CANDIDATES+=("\$ASSET_MIRROR"); fi
+    if [[ -n "\$DOWNLOAD_BASE" ]]; then CANDIDATES+=("\${DOWNLOAD_BASE%/}/\$ASSET"); fi
+    if [[ -n "\$CUSTOM_BASE" ]]; then CANDIDATES+=("\${CUSTOM_BASE%/}/\$ASSET"); fi
 
-  if [[ \${#CANDIDATES[@]} -eq 0 ]]; then
-    die "未配置面板公网地址，无法下载定制版 frpc。请在面板「frps 设置 → 面板公网地址」中填写后重新生成脚本，或用 --base 指定自建镜像。"
-  fi
-
-  OK=0
-  for CAND in "\${CANDIDATES[@]}"; do
-    # 直链可能带查询串（如 OpenList 的 ?sign=xxx:0），日志里隐藏签名值
-    log "下载 \${CAND%%\\?*}"
-    if curl -fL --retry 3 --connect-timeout 15 -o "\$TMP_DIR/frp.tar.gz" "\$CAND" \\
-       && tar -xzf "\$TMP_DIR/frp.tar.gz" -C "\$TMP_DIR" 2>/dev/null \\
-       && [[ -n "\$(find "\$TMP_DIR" -maxdepth 2 -type f -name frpc | head -1)" ]]; then
-      OK=1
-      break
+    if [[ \${#CANDIDATES[@]} -eq 0 ]]; then
+      die "未配置面板公网地址，无法下载定制版 frpc。请在面板「frps 设置 → 面板公网地址」中填写后重新生成脚本，或用 --base 指定自建镜像。"
     fi
-    warn "该地址不可用，尝试下一个来源"
-    rm -rf "\$TMP_DIR"; mkdir -p "\$TMP_DIR"
-  done
-  [[ "\$OK" == "1" ]] || die "所有下载地址均失败，请检查网络，或用 --base 指定镜像地址"
+
+    # 面板本地分发包的 sha256（用于校验下载完整性，防 mirror/CDN 劫持）
+    EXPECTED_SHA=""
+    if [[ -n "\$ASSET_CHECKSUMS_B64" ]]; then
+      CHECKSUMS_JSON="\$(printf '%s' "\$ASSET_CHECKSUMS_B64" | base64 -d 2>/dev/null || true)"
+      if [[ -n "\$CHECKSUMS_JSON" ]]; then
+        if command -v python3 >/dev/null 2>&1; then
+          EXPECTED_SHA="\$(printf '%s' "\$CHECKSUMS_JSON" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get(sys.argv[1],""))' "\$ASSET" 2>/dev/null || true)"
+        else
+          EXPECTED_SHA="\$(printf '%s' "\$CHECKSUMS_JSON" | tr ',' '\n' | grep -F "\"\$ASSET\":" | sed -e 's/.*:\\"//' -e 's/\\".*//' | head -1 || true)"
+        fi
+      fi
+    fi
+
+    OK=0
+    for CAND in "\${CANDIDATES[@]}"; do
+      # 直链可能带查询串（如 OpenList 的 ?sign=xxx:0），日志里隐藏签名值
+      log "下载 \${CAND%%\\?*}"
+      if curl -fL --retry 3 --connect-timeout 15 -o "\$TMP_DIR/frp.tar.gz" "\$CAND" \
+         && tar -xzf "\$TMP_DIR/frp.tar.gz" -C "\$TMP_DIR" 2>/dev/null \
+         && [[ -n "\$(find "\$TMP_DIR" -maxdepth 2 -type f -name frpc | head -1)" ]]; then
+        # 完整性校验：面板本地有该包的 sha256 时必须匹配。
+        # 直链源无法预知 hash，因此只校验有 hash 的场景——
+        # 这仍覆盖了最关键的回退链路（面板分发）。
+        if [[ -n "\$EXPECTED_SHA" ]]; then
+          ACTUAL_SHA="\$(sha256sum "\$TMP_DIR/frp.tar.gz" 2>/dev/null | awk '{print \$1}')"
+          if [[ "\$ACTUAL_SHA" != "\$EXPECTED_SHA" ]]; then
+            warn "sha256 不匹配（期望 \${EXPECTED_SHA:0:16}…，实际 \${ACTUAL_SHA:0:16}…），该来源不可信，尝试下一个"
+            rm -rf "\$TMP_DIR"; mkdir -p "\$TMP_DIR"
+            continue
+          fi
+          log "sha256 校验通过"
+        fi
+        OK=1
+        break
+      fi
+      warn "该地址不可用，尝试下一个来源"
+      rm -rf "\$TMP_DIR"; mkdir -p "\$TMP_DIR"
+    done
+    [[ "\$OK" == "1" ]] || die "所有下载地址均失败，请检查网络，或用 --base 指定镜像地址"
   SRC="\$(find "\$TMP_DIR" -maxdepth 2 -type f -name frpc | head -1)"
   [[ -n "\$SRC" ]] || die "压缩包中未找到 frpc 二进制"
   install -m 0755 "\$SRC" "\$INSTALL_DIR/frpc"
