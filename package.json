@@ -1,6 +1,6 @@
 {
   "name": "frp-console",
-  "version": "0.4.0",
+  "version": "0.0.1",
   "private": true,
   "type": "module",
   "description": "Web 面板：管理 frps，并为 frpc 生成一键 systemd 安装脚本",
