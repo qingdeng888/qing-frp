@@ -1,0 +1,396 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>frp-console · frps / frpc 管理面板</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<!-- ============================== 登录页 ============================== -->
+<div id="loginRoot" class="login-wrap hidden">
+  <form class="login-card" id="loginForm" autocomplete="on">
+    <div class="brand" style="padding:0 0 6px">
+      <span class="dot"></span>
+      <div>frp-console<small>frps / frpc 管理面板</small></div>
+    </div>
+    <div class="login-sub">请登录以继续</div>
+    <div id="loginError" class="alert err hidden"></div>
+    <label class="field"><span>账号</span>
+      <input type="text" id="loginUser" value="admin" autocomplete="username" required>
+    </label>
+    <label class="field"><span>密码</span>
+      <input type="password" id="loginPass" autocomplete="current-password" required>
+    </label>
+    <button class="primary" id="loginBtn" type="submit" style="width:100%;margin-top:4px">登录</button>
+  </form>
+</div>
+
+<!-- =============================== 主应用 =============================== -->
+<div class="layout hidden" id="appRoot">
+  <aside class="sidebar">
+    <div class="brand">
+      <span class="dot"></span>
+      <div>frp-console<small>frps / frpc 管理面板</small></div>
+    </div>
+    <div class="nav-item active" data-page="dashboard">📊 <span>总览</span></div>
+    <div class="nav-item" data-page="frps">🖥️ <span>frps 设置</span></div>
+    <div class="nav-item" data-page="ports">🔢 <span>端口范围</span></div>
+    <div class="nav-item" data-page="nodes">🌐 <span>节点管理</span><span class="badge" id="navNodeCount">0</span></div>
+    <div class="nav-item" data-page="build">🔧 <span>定制构建</span></div>
+    <div class="sidebar-foot">
+      <button class="sm ghost" onclick="doLogout()" style="width:100%">退出登录</button>
+    </div>
+  </aside>
+
+  <main class="main">
+    <div id="globalAlert"></div>
+
+    <!-- ============================ 总览 ============================ -->
+    <section class="page active" id="page-dashboard">
+      <h1>总览</h1>
+      <div class="subtitle">frps 运行状态与端口池使用情况</div>
+
+      <div class="card">
+        <div class="card-head">
+          <h2>frps 服务</h2>
+          <div class="spacer"></div>
+          <button class="sm" onclick="loadDashboard()">刷新</button>
+        </div>
+        <div id="frpsStatusBox" class="row-between">
+          <div class="kv" id="frpsStatusKv"><div class="k">状态</div><div class="v">加载中…</div></div>
+          <div class="btn-row">
+            <button class="primary" onclick="deployFrps()">生成配置并重启 frps</button>
+            <button onclick="controlFrps('restart')">重启</button>
+            <button onclick="controlFrps('stop')">停止</button>
+            <button onclick="showLogs()">查看日志</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="grid3">
+        <div class="card"><div class="stat"><span class="k">节点总数</span><span class="v" id="statNodes">0</span></div></div>
+        <div class="card"><div class="stat"><span class="k">代理总数</span><span class="v" id="statProxies">0</span></div></div>
+        <div class="card"><div class="stat"><span class="k">端口池</span><span class="v" id="statPool">-</span></div></div>
+      </div>
+
+      <div class="card">
+        <h2>环境信息</h2>
+        <div class="kv" id="sysInfoKv"><div class="k">…</div><div class="v"></div></div>
+      </div>
+    </section>
+
+    <!-- =========================== frps 设置 =========================== -->
+    <section class="page" id="page-frps">
+      <h1>frps 设置</h1>
+      <div class="subtitle">保存后会重新生成 frps.toml；点击「生成配置并重启 frps」才会生效</div>
+
+      <div class="card">
+        <h2>监听与密钥</h2>
+        <div class="grid3">
+          <label class="field"><span>控制端口 bindPort</span>
+            <input type="number" id="s_bindPort" min="1" max="65535">
+            <div class="hint">frpc 连接 frps 的端口</div>
+          </label>
+          <label class="field"><span>监听地址 bindAddr</span>
+            <input type="text" id="s_bindAddr" placeholder="0.0.0.0">
+          </label>
+          <label class="field"><span>认证方式</span>
+            <select id="s_authMethod"><option value="token">token</option><option value="oidc">oidc</option></select>
+          </label>
+        </div>
+        <label class="field"><span>frps 地址（对外公布）</span>
+          <div class="inline">
+            <input type="text" id="s_frpsAddr" placeholder="公网 IP 或域名，留空则不继承">
+            <button class="sm" onclick="useDetectedForFrps()">用当前访问地址填入</button>
+          </div>
+          <div class="hint">
+            新建节点时「frps 地址」留空即继承此值，免去每个节点重填。
+            只填主机名或 IP（不要带 <code>http://</code> 和端口，端口用上面的 bindPort）。
+          </div>
+        </label>
+        <label class="field"><span>连接密钥 auth.token</span>
+          <div class="inline">
+            <input type="text" id="s_authToken" placeholder="必填">
+            <button class="sm" onclick="genToken()">随机生成</button>
+          </div>
+          <div class="hint">frpc 必须填写一致，否则登录被拒绝</div>
+        </label>
+        <div class="grid3">
+          <label class="field"><span>KCP 端口 kcpBindPort</span><input type="number" id="s_kcpBindPort" placeholder="留空禁用"></label>
+          <label class="field"><span>QUIC 端口 quicBindPort</span><input type="number" id="s_quicBindPort" placeholder="留空禁用"></label>
+          <label class="field"><span>UDP 包大小 udpPacketSize</span><input type="number" id="s_udpPacketSize"></label>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>虚拟主机（HTTP / HTTPS 域名穿透）</h2>
+        <div class="grid3">
+          <label class="field"><span>vhostHTTPPort</span><input type="number" id="s_vhostHttpPort" placeholder="留空禁用"></label>
+          <label class="field"><span>vhostHTTPSPort</span><input type="number" id="s_vhostHttpsPort" placeholder="留空禁用"></label>
+          <label class="field"><span>子域名后缀 subDomainHost</span><input type="text" id="s_subdomainHost" placeholder="example.com"></label>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>内置 Dashboard（可选，与本面板无关）</h2>
+        <label class="check"><input type="checkbox" id="s_dashboardEnabled"><span>启用 frps 自带 Dashboard</span></label>
+        <div class="grid3">
+          <label class="field"><span>Dashboard 端口</span><input type="number" id="s_dashboardPort"></label>
+          <label class="field"><span>用户名</span><input type="text" id="s_dashboardUser"></label>
+          <label class="field"><span>密码</span><input type="text" id="s_dashboardPassword"></label>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>传输与日志</h2>
+        <div class="grid3">
+          <label class="field"><span>日志级别</span>
+            <select id="s_logLevel">
+              <option>trace</option><option>debug</option><option>info</option><option>warn</option><option>error</option>
+            </select>
+          </label>
+          <label class="field"><span>日志保留天数</span><input type="number" id="s_logMaxDays"></label>
+          <label class="field"><span>心跳超时 heartbeatTimeout</span><input type="number" id="s_heartbeatTimeout"></label>
+          <label class="field"><span>maxPoolCount</span><input type="number" id="s_maxPoolCount"></label>
+          <label class="field"><span>tcpMux 保活间隔</span><input type="number" id="s_tcpMuxKeepalive"></label>
+          <label class="field"><span>每客户端最大端口数</span><input type="number" id="s_maxPortsPerClient"><div class="hint">0 表示不限制</div></label>
+        </div>
+        <label class="check"><input type="checkbox" id="s_tcpMux"><span>启用 TCP 多路复用 tcpMux</span></label>
+        <label class="check"><input type="checkbox" id="s_tlsForce"><span>强制 TLS（transport.tls.force）</span></label>
+        <label class="check"><input type="checkbox" id="s_detailedErrors"><span>向客户端返回详细错误</span></label>
+        <label class="check"><input type="checkbox" id="s_enablePrometheus"><span>导出 Prometheus 指标</span></label>
+      </div>
+
+      <div class="card">
+        <h2>定制版 frp（本面板唯一支持的版本）</h2>
+        <div class="alert info" style="margin-bottom:12px">
+          frp-console 只分发自己的定制版 frp（官方版 <b>+</b> 诊断/心跳/审计/配额），
+          官方预编译包不再作为备选。节点从面板 <code>/custom-frp/</code> 下载，因此必须配置下面的面板公网地址。
+        </div>
+        <div class="grid2">
+          <div class="field"><span>定制版状态</span>
+            <div id="variantStatus" style="font-size:13px">检测中…</div>
+          </div>
+          <div class="field"><span>已预构建架构</span>
+            <div id="variantArches" style="font-size:13px">检测中…</div>
+          </div>
+        </div>
+        <div class="btn-row">
+          <button class="sm" onclick="loadBuildStatus();renderVariantStatus()">刷新状态</button>
+          <button class="sm primary" onclick="go('build')">去构建</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>面板公网地址（生成安装脚本时用）</h2>
+        <label class="field"><span>面板公网地址</span>
+          <input type="text" id="s_publicBaseUrl" placeholder="http://你的公网IP:37000 或 https://frp.example.com">
+          <div class="hint">
+            外部节点靠这个地址回连面板（心跳上报、<code>--refresh</code> 拉取配置）。
+            <b>留空则自动探测内网 IP，通常外网节点用不了</b>，请务必填写公网地址或域名。
+          </div>
+        </label>
+        <div class="alert warn" id="panelUrlWarn" style="display:none"></div>
+        <div class="btn-row">
+          <button class="sm" onclick="useDetectedUrl()">用当前访问地址填入</button>
+          <span id="detectedUrlHint" style="font-size:12px;color:var(--text-dim)"></span>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>GitHub 代理 / 镜像（服务器访问 GitHub 不畅时使用）</h2>
+        <div class="grid2">
+          <label class="field"><span>GitHub 前缀代理</span>
+            <input type="text" id="s_githubProxy" placeholder="https://raw.xiaoy.de">
+            <div class="hint">填 <code>https://raw.xiaoy.de</code> 这类前缀代理，面板会自动拼成
+              <code>https://raw.xiaoy.de/https://github.com/...</code>。留空则直连 GitHub。</div>
+          </label>
+          <label class="field"><span>Go 模块代理 GOPROXY</span>
+            <input type="text" id="s_goproxy" placeholder="https://goproxy.cn,direct">
+            <div class="hint">定制构建时拉取 Go 依赖用。国内建议 <code>https://goproxy.cn,direct</code></div>
+          </label>
+          <label class="field"><span>Go 工具链下载源</span>
+            <input type="text" id="s_goDownloadBase" placeholder="https://golang.google.cn/dl">
+            <div class="hint">默认 <code>https://go.dev/dl</code>；国内可换 <code>https://golang.google.cn/dl</code></div>
+          </label>
+        </div>
+        <label class="check"><input type="checkbox" id="s_githubProxyApi">
+          <span>该代理同时支持 api.github.com</span></label>
+        <div class="hint" style="margin:-6px 0 12px 23px;color:var(--text-dim);font-size:12px">
+          多数前缀代理<b>不支持</b> GitHub API（实测返回 403）。不勾选时「最新版本检测」仍走直连，
+          只把文件下载走代理——这样不会因为 API 不通导致误报。
+        </div>
+
+      <!-- 二进制直链托管 -->
+      <div class="card" style="margin-top:16px">
+        <div class="card-head">
+          <div>
+            <div class="card-title">二进制直链托管</div>
+            <div class="hint" style="margin-top:4px">
+              把 frp 安装包托管到 OpenList / 对象存储 / CDN，节点安装时优先从这些直链下载，
+              减轻面板带宽压力。每个文件可填各自的完整直链（含签名参数）。
+            </div>
+          </div>
+          <button class="sm" type="button" onclick="addMirrorRow()">+ 添加</button>
+        </div>
+
+        <div id="mirrorRows" style="margin-top:10px"></div>
+
+        <div class="hint" style="margin-top:8px;color:var(--text-dim);font-size:12px">
+          <b>文件</b>请填面板实际分发的资产名（如
+          <code>frp_0.71.0_linux_amd64.tar.gz</code>）。未配置的文件自动走面板分发。<br>
+          <b>地址</b>填完整直链，签名参数请一并粘贴（如 OpenList 的
+          <code>?sign=xxx:0</code>）。<br>
+          <b>回退</b>直链失效（签名过期 / 存储故障 / 404）时会自动改用面板分发，安装不会中断。
+        </div>
+
+        <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
+          <button class="sm" type="button" onclick="fillMirrorTemplate()">填入本机全部架构</button>
+          <span class="hint" style="align-self:center;color:var(--text-dim)">
+            一键列出 6 个 Linux 架构的文件名，方便逐个贴直链
+          </span>
+        </div>
+      </div>
+        <div class="btn-row">
+          <button class="sm" onclick="testGithubProxy()">测试代理连通性</button>
+          <span id="proxyTestResult" style="font-size:13px"></span>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>额外 TOML（追加到 frps.toml 末尾）</h2>
+        <textarea id="s_extraToml" rows="5" placeholder="# 例如&#10;# [[httpPlugins]]&#10;# name = &quot;my-plugin&quot;"></textarea>
+      </div>
+
+      <div class="btn-row">
+        <button class="primary" onclick="saveSettings()">保存设置</button>
+        <button onclick="previewToml()">预览 frps.toml</button>
+        <button onclick="verifyToml()">用 frps verify 校验</button>
+        <button onclick="deployFrps()">生成配置并重启 frps</button>
+      </div>
+    </section>
+
+    <!-- =========================== 端口范围 =========================== -->
+    <section class="page" id="page-ports">
+      <h1>端口范围</h1>
+      <div class="subtitle">frpc 的远端端口只允许从这里取；随机分配也从这些区间挑选</div>
+
+      <div class="card">
+        <div class="card-head">
+          <h2>允许客户端使用的端口区间 allowPorts</h2>
+          <div class="spacer"></div>
+          <button class="sm" onclick="addRangeRow()">+ 添加区间</button>
+        </div>
+        <div id="rangeList"></div>
+        <div class="btn-row mt">
+          <button class="primary" onclick="saveRanges()">保存端口范围</button>
+        </div>
+      </div>
+
+      <div class="grid3">
+        <div class="card"><div class="stat"><span class="k">区间总量</span><span class="v" id="poolTotal">0</span></div></div>
+        <div class="card"><div class="stat"><span class="k">已占用</span><span class="v" id="poolUsed">0</span></div></div>
+        <div class="card"><div class="stat"><span class="k">剩余可用</span><span class="v" id="poolFree">0</span></div></div>
+      </div>
+
+      <div class="card">
+        <h2>已占用端口</h2>
+        <div id="usedPortsBox" class="mono" style="word-break:break-all;color:var(--text-dim)">-</div>
+        <div class="hint mt" style="color:var(--text-dim);font-size:12px">
+          含各节点代理占用的端口，以及 frps 自身监听端口（bindPort / dashboard 等，不会被分配出去）
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>手动保留端口</h2>
+        <div class="subtitle mb0" style="margin-bottom:12px">把端口占住，随机分配不会再选中它</div>
+        <div class="inline" style="max-width:340px">
+          <input type="number" id="reservePort" placeholder="端口号" min="1" max="65535">
+          <button onclick="reservePort()">保留</button>
+        </div>
+        <div id="manualReservations" class="mt"></div>
+      </div>
+    </section>
+
+    <!-- =========================== 节点管理 =========================== -->
+    <section class="page" id="page-nodes">
+      <h1>节点管理</h1>
+      <div class="subtitle">每个节点 = 一台运行 frpc 的机器。Linux：一键安装脚本（systemd / nohup）；Windows：下载 zip 包解压使用</div>
+
+      <div class="card">
+        <div class="card-head">
+          <h2>节点列表</h2>
+          <div class="spacer"></div>
+          <button class="primary" onclick="openNodeModal()">+ 新建节点</button>
+        </div>
+        <div id="nodeList"></div>
+      </div>
+
+      <div class="card hidden" id="nodeDetail">
+        <div class="card-head">
+          <h2 id="nodeDetailTitle">节点详情</h2>
+          <div class="spacer"></div>
+          <button class="sm" onclick="openNodeModal(currentNodeId)">编辑节点</button>
+          <button class="sm" onclick="showInstallScript(currentNodeId)">一键安装脚本</button>
+          <button class="sm" onclick="showFrpcToml(currentNodeId)">frpc.toml</button>
+          <button class="sm" onclick="downloadWindows(currentNodeId)">Windows 包</button>
+          <button class="sm" onclick="regenToken(currentNodeId)">重置安装 token</button>
+        </div>
+        <div class="kv" id="nodeDetailKv"></div>
+
+        <div class="card-head mt" style="margin-top:22px">
+          <h2>代理（[[proxies]]）</h2>
+          <div class="spacer"></div>
+          <button class="primary sm" onclick="openProxyModal()">+ 添加代理</button>
+        </div>
+        <div id="proxyList"></div>
+      </div>
+    </section>
+    <!-- =========================== 定制构建 =========================== -->
+    <section class="page" id="page-build">
+      <h1>定制构建</h1>
+      <div class="subtitle">从源码构建带定制功能的 frps / frpc（审计日志、流量配额、诊断、心跳上报）</div>
+
+      <div class="card">
+        <div class="card-head">
+          <h2>环境检测</h2>
+          <div class="spacer"></div>
+          <button class="sm" onclick="loadBuildStatus()">刷新</button>
+        </div>
+        <div class="kv" id="buildEnvKv"><div class="k">…</div><div class="v"></div></div>
+      </div>
+
+      <div class="card">
+        <h2>已构建二进制</h2>
+        <div class="kv" id="buildBinKv"><div class="k">…</div><div class="v"></div></div>
+        <div class="card-head mt">
+          <h2 style="font-size:13px">已包含的定制功能</h2>
+        </div>
+        <div id="buildFeatures"><span class="badge">检测中…</span></div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h2>构建</h2>
+          <div class="spacer"></div>
+          <input type="text" id="buildVersion" value="0.71.0" style="width:110px" placeholder="0.71.0">
+          <button class="primary sm" onclick="startBuild()">开始构建</button>
+          <button class="sm" onclick="installBuilt()">安装到面板</button>
+        </div>
+        <div class="alert info" style="margin-bottom:12px">
+          首次构建会自动下载 Go 工具链与 frp 源码，约需 1-3 分钟。构建在后台进行，可离开本页。
+        </div>
+        <pre class="code" id="buildLog" style="max-height:340px">（暂无构建日志）</pre>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<div id="modalRoot"></div>
+<div id="toastRoot"></div>
+
+<script src="/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,21 @@
+# 依赖与构建产物（可从源码重建，不入库）
+node_modules/
+/dist/
+data/
+*.log
+.DS_Store
+.env
+
+# 发布包：由 release.sh 生成，可从源码重建
+dist-release/
+
+# 构建中间产物（源码与解压目录），但保留预构建的发布包
+/opt/frp-build/
+custom-frp/work/
+custom-frp/dist/frp_*_linux_*/
+
+# 预构建产物中需要入库的部分（显式保留，覆盖上面的目录排除）
+!custom-frp/dist/*.tar.gz
+!custom-frp/dist/frp_*_windows_*/frpc.exe
+!custom-frp/out/frpc
+!custom-frp/out/frps

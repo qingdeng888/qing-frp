@@ -1,0 +1,32 @@
+# Build context hygiene for the frp-console image.
+# The prebuilt frp tarballs under custom-frp/dist MUST be included (they ship
+# inside the image), while the unpacked per-arch directories are redundant.
+
+node_modules
+**/node_modules
+
+# Local runtime state
+data/
+*.log
+.env
+
+# Go build tree; only the produced tarballs are needed
+/opt/frp-build/
+custom-frp/work/
+custom-frp/out/
+
+# Unpacked copies of the tarballs (the .tar.gz files themselves are kept).
+# Note: a pattern like "custom-frp/dist/frp_*_linux_*/" would also exclude the
+# tarballs, so match the directory contents explicitly.
+custom-frp/dist/frp_*_linux_*/**
+
+# Tooling / editor noise
+.git
+.gitignore
+.DS_Store
+.vscode
+.idea
+
+# Tests are not needed at runtime
+scripts/
+tests/

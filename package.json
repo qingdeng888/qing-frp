@@ -1,0 +1,34 @@
+{
+  "name": "frp-console",
+  "version": "0.4.0",
+  "private": true,
+  "type": "module",
+  "description": "Web 面板：管理 frps，并为 frpc 生成一键 systemd 安装脚本",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node --disable-warning=ExperimentalWarning dist/index.js",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "cli": "tsx src/cli.ts",
+    "test": "FRP_CONSOLE_HOME=${FRP_CONSOLE_HOME:-/tmp/frp-console-e2e} tsx scripts/e2e.ts",
+    "test:tunnel": "FRP_CONSOLE_HOME=${FRP_CONSOLE_HOME:-/tmp/frp-tunnel-test} tsx scripts/tunnel-e2e.ts",
+    "test:ui": "node scripts/ui-check.mjs",
+    "test:login": "node scripts/login-check.mjs",
+    "test:session": "node --disable-warning=ExperimentalWarning scripts/session-check.mjs",
+    "test:layout": "node scripts/layout-check.mjs"
+  },
+  "dependencies": {
+    "@fastify/static": "^8.2.0",
+    "fastify": "^5.4.0",
+    "iconv-lite": "^0.7.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "playwright": "^1.63.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.8.0"
+  },
+  "engines": {
+    "node": ">=22.5.0"
+  }
+}

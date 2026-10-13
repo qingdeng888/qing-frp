@@ -1,0 +1,29 @@
+{
+  "_comment": "frp-console 源码变换清单。构建脚本按顺序对 frp 源码做精确字符串替换。每个变换的 anchor 必须精确出现一次，否则构建失败（避免静默产生错误代码）。",
+  "transforms": [
+    {
+      "file": "server/control.go",
+      "why": "在注册代理前插入流量配额检查",
+      "anchor": "\tretContent, err := ctl.sessionCtx.PluginManager.NewProxy(content)\n\tif err == nil {\n\t\tinMsg = &retContent.NewProxy\n\t\tremoteAddr, err = ctl.RegisterProxy(inMsg)\n\t}",
+      "replace": "\tretContent, err := ctl.sessionCtx.PluginManager.NewProxy(content)\n\tif err == nil {\n\t\t// frp-console: enforce the traffic quota before the proxy is registered.\n\t\tif qerr := consoleQuotaCheck(inMsg.ProxyName); qerr != nil {\n\t\t\txl.Warnf(\"new proxy [%s] rejected by quota: %v\", inMsg.ProxyName, qerr)\n\t\t\terr = qerr\n\t\t} else {\n\t\t\tinMsg = &retContent.NewProxy\n\t\t\tremoteAddr, err = ctl.RegisterProxy(inMsg)\n\t\t}\n\t}"
+    },
+    {
+      "file": "server/control.go",
+      "why": "添加配额检查辅助函数",
+      "anchor": "func (ctl *Control) handlePing(m msg.Message) {",
+      "replace": "// consoleQuotaCheck reports an error when the named proxy has exhausted its\n// configured traffic quota. It is a no-op unless the console metrics layer is\n// installed and the proxy has a quota rule.\nfunc consoleQuotaCheck(proxyName string) error {\n\tcm := metrics.ConsoleMetricsInstance()\n\tif cm == nil {\n\t\treturn nil\n\t}\n\treturn cm.CheckQuota(proxyName)\n}\n\nfunc (ctl *Control) handlePing(m msg.Message) {"
+    },
+    {
+      "file": "cmd/frps/root.go",
+      "why": "在 frps 创建服务前安装审计与配额",
+      "anchor": "\tsvr, err := server.NewService(cfg)",
+      "replace": "\t// frp-console: install auditing + traffic quota before the service starts.\n\tinstallConsoleAudit()\n\n\tsvr, err := server.NewService(cfg)"
+    },
+    {
+      "file": "cmd/frpc/sub/root.go",
+      "why": "启动 frpc 心跳上报（面板可见节点状态）",
+      "anchor": "\tshouldGracefulClose := cfg.Transport.Protocol == \"kcp\" || cfg.Transport.Protocol == \"quic\"",
+      "replace": "\t// frp-console: report status to the panel when configured via env.\n\tstartConsoleHeartbeat(func() map[string][]proxyStatusLite {\n\t\texp := svr.StatusExporter()\n\t\tout := make(map[string][]proxyStatusLite)\n\t\tpcfgs, _, err := aggregator.Load()\n\t\tif err != nil {\n\t\t\treturn out\n\t\t}\n\t\tfor _, pxy := range pcfgs {\n\t\t\tbase := pxy.GetBaseConfig()\n\t\t\tentry := proxyStatusLite{Name: base.Name, Type: base.Type, Status: \"unknown\"}\n\t\t\tif st, ok := exp.GetProxyStatus(base.Name); ok {\n\t\t\t\tentry.Status = st.Phase\n\t\t\t\tentry.Err = st.Err\n\t\t\t}\n\t\t\tout[base.Type] = append(out[base.Type], entry)\n\t\t}\n\t\treturn out\n\t})\n\n\tshouldGracefulClose := cfg.Transport.Protocol == \"kcp\" || cfg.Transport.Protocol == \"quic\""
+    }
+  ]
+}
